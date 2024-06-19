@@ -1,0 +1,519 @@
+#!/bin/csh -f
+
+if ( ! $?TMPDIR ) then
+ set TMPDIR = /tmp/$USER
+endif
+
+
+set CHECK = `basename $0| awk '{if ($0 ~"check"){print "_check"}else{print ""}}'`
+set CRYSTAL_TYPE=`basename $0|awk -F"." '{print $1}'| sed 's/^.*[0-9]//;s/runcry//g'`
+set CRYSTAL_LABEL=`echo $CRYSTAL_TYPE | awk '/MPP/{print "_MPP"};/P/{print ""}'` 
+set XDIR = /home/mariarum/Zn2GeO4/
+set MPIRUN = mpiexec
+set MPIRUN_OPTIONS = ""
+echo ${MPIRUN} ${MPIRUN_OPTIONS}
+set CRYCOMMAND="${MPIRUN} ${MPIRUN_OPTIONS} ${XDIR}/${CRYSTAL_TYPE}crystal"
+
+ if ( $#argv < 1) then
+cat << EOF
+Usage: 
+
+$0 inpfilename.d12 [filename restart data]
+    OR
+$0 inpfilename     [filename restart data]
+------------------------------------------
+inpfilename.d12      CRYSTAL input deck for wave function calculation;
+                     properties calculation is run, if inpfilename.d3 exists.
+properties.d3        properties calculation is run, if properties.d3 exist.
+------------------------------------------
+[filename.f9]        fort.9 written by a previous run 
+                     (GUESSP or GUESSF in SCF input)
+[filename.OPTHESS]   OPTHESS.DAT written by a previous opt run
+[filename.OPTINFO]   OPTINFO.DAT written by a previous opt run
+[filename.FREQINFO]  FREQINFO.DAT (fort.94) written by a previous freq run
+[filename.f13]       fort.13 written by a previous freq run 
+[filename.f28]       fort.28 written by a previous freq run
+[filename.f80]       fort.80 written by a previous run
+------------------------------------------
+Results are written in current directory, 
+inpfilename.out 
+
+The following files, if present and not empty 
+in the temporary directory, are moved to current directory:
+
+TEMPORARY         SAVED                CONTENTS
+fort.9            inpfilename.f9       binary wave function
+fort.98           inpfilename.f98      formatted wave function 
+GAUSSIAN.DAT (92) inpfilename.GAUSSIAN input for Gaussian94/98
+MOLDRAW.DAT  (93) inpfilename.MOLDRAW  input for MOLDRAW
+fort.33           inpfilename.xyz      atoms coordinates
+fort.34           inpfilename.gui      GUI - geometry input - keyword EXTERNAL
+FINDSYM.DAT       inpfilename.FINDSYM  input to the program findsym
+OPTHESS.DAT  (66) inpfilename.OPTHESS  formatted hessian
+OPTINFO.DAT  (68) inpfilename.OPTINFO  complete info for opt restart
+FREQINFO.DAT (94) inpfilename.FREQINFO complete info for freq restart
+PPAN.DAT          inpfilename.PPAN     Mulliken population analysis data
+
+properties only
+fort.25           inpfilename.f25      data for plotting :BAND, MAPS, DOSS
+fort.31           inpfilename.prop3d   data for 3D charge (spin) density/potential
+fort.80           inpfilename.localwf  Wannier functions
+GRED.DAT          inpfilename.GRED     formatted data - direct lattice
+KIBZ.DAT          inpfilename.KIBZ     formatted data - reciprocal lattice - IBZ
+KRED.DAT          inpfilename.KRED     formatted data - reciprocal lattice - full BZ
+LINEA.DAT         inpfilename.LINEA    formatted data - EMD line
+PROF.DAT          inpfilename.PROF     formatted data - EMD in a plane
+DIEL.DAT          inpfilename.DIEL     formatted data - dielectric constant
+POTC.DAT          inpfilename.POTC     formatted data - exact electrostatic potential
+------------------------------------------
+EOF
+ exit
+ endif
+
+set I=`echo $1 | sed 's/.d12$//g'`
+set OUTFILE=$I.out
+
+if ( -f $OUTFILE ) then
+ echo "output exists: $OUTFILE"
+ echo "please remove the file if necessary"
+ exit
+endif
+
+echo printed output filename $OUTFILE
+
+set TMPDIR = $TMPDIR/$I"_"$$
+
+
+
+
+echo creating temporary directory $TMPDIR
+ mkdir -p $TMPDIR
+
+#create temporary copy of the script for execution
+ set SCRIPT=`basename $0`
+ sed '1,/^#tag_copy/d' $0 > $TMPDIR/$SCRIPT
+ echo "<script>"
+ cat $TMPDIR/$SCRIPT
+ echo "</script>"
+ echo -n "DATE START:"
+ date
+ source $TMPDIR/$SCRIPT  
+ echo -n "DATE END:"
+ date
+ echo "DONE"
+ exit
+#tag_copy
+
+if ( ${?PBS_NODEFILE}) then
+ if ( -e ${PBS_NODEFILE} ) then
+   echo '${PBS_NODEFILE}' found: ${PBS_NODEFILE}
+   cat ${PBS_NODEFILE}
+#  set NODENAME=`hostname`
+   set PCLIST=`awk '{if ($I != old){printf("%s ",$I);old=$I}}' ${PBS_NODEFILE}`
+#  set PCLIST=`echo ${PCLIST} | sed 's/'${NODENAME}'//' `
+ else 
+   echo '${PBS_NODEFILE}' not found
+   exit
+ endif
+
+ foreach PC ($PCLIST)
+ ssh $PC "if [ ! -d $TMPDIR ];then mkdir -p $TMPDIR;echo 'temporary directory on '$PC;fi"
+ end
+
+endif
+
+
+ set INPPROP  = $cwd
+ set OUTDIR   = $cwd
+ set INPDIR   = $cwd
+ set CRY2K6_F9 = $cwd 
+
+echo $OUTDIR/$OUTFILE
+cat <<EOF >& $OUTDIR/$OUTFILE
+date:                `date`
+hostname:            `hostname`
+system:              `uname -a`
+user:                `whoami`
+input:               $OUTDIR/$I.d12
+output:              $OUTDIR/$OUTFILE
+executable script:   `which $0`
+executable dir:      $XDIR
+executables:     
+`ls -l $XDIR |awk '{if(\$1~"x"){printf "                    ";print}}'` 
+
+Command:             $CRYCOMMAND
+temporary directory: $TMPDIR      
+EOF
+
+if ( ${?PBS_JOBID}) then
+ echo "<qstat -f $PBS_JOBID>"  >>& $OUTDIR/$OUTFILE
+ qstat -f $PBS_JOBID           >>& $OUTDIR/$OUTFILE
+ echo "</qstat -f $PBS_JOBID>" >>& $OUTDIR/$OUTFILE
+endif
+
+
+if ( $#argv > 1 ) then
+ if (-e $CRY2K6_F9/$2.f9 && ! -z $CRY2K6_F9/$2.f9 ) then
+ cp $CRY2K6_F9/$2.f9 $TMPDIR/fort.20
+ echo scf guess from $CRY2K6_F9/$2.f9
+ echo scf guess from $CRY2K6_F9/$2.f9 >>& $OUTDIR/$OUTFILE
+ else
+ echo CRYSTAL data $CRY2K6_F9/$2.f9 not found or empty
+ endif
+
+foreach NODAT_FILE ( BORN FREQINFO OPTHESS OPTINFO POINTCHG EOSINFO TENS_RAMAN )
+ set SAVEDFILE=$CRY2K6_F9/$2"."$NODAT_FILE
+ if( -e $SAVEDFILE && ! -z $SAVEDFILE ) then
+ set DAT_FILE=$TMPDIR/$NODAT_FILE".DAT"
+ cp $SAVEDFILE $DAT_FILE
+ echo file $SAVEDFILE copied in $DAT_FILE >>& $OUTDIR/$OUTFILE
+ echo file $SAVEDFILE copied in $DAT_FILE
+ endif
+end
+
+foreach F_FILE ( f13 f28 f80 f91 )
+ set SAVEDFILE=$CRY2K6_F9/$2"."$F_FILE
+ if( -e $SAVEDFILE && ! -z $SAVEDFILE ) then
+ set FORT_NUMBER=`echo $F_FILE | sed 's/f//g'`
+ set FORT_FILE=$TMPDIR/"fort."$FORT_NUMBER
+ cp $SAVEDFILE $FORT_FILE
+ echo file $SAVEDFILE copied in $FORT_FILE >>& $OUTDIR/$OUTFILE
+ echo file $SAVEDFILE copied in $FORT_FILE
+ endif
+end
+
+
+ if (-e $CRY2K6_F9/$2.f80 && ! -z $CRY2K6_F9/$2.f80 ) then
+ cp $CRY2K6_F9/$2.f80 $TMPDIR/fort.80
+ echo localwf from $CRY2K6_F9/$2.f80
+ echo localwf from $CRY2K6_F9/$2.f80 >>& $OUTDIR/$OUTFILE
+ endif
+
+endif
+ 
+ if (-e $INPDIR/$I.d12 && ! -z $INPDIR/$I.d12 ) then
+ echo input expected in $INPDIR/$I.d12
+ echo input data $INPDIR/$I.d12 >>& $OUTDIR/$OUTFILE
+ cat $INPDIR/$I.d12 >>& $OUTDIR/$OUTFILE
+ else
+ echo CRYSTAL input data $INPDIR/$I.d12 not found or empty
+ exit
+ endif
+
+ echo "tmp" $TMPDIR
+ cd $TMPDIR
+
+ if (-e $INPDIR/$I.gui  && ! -z  $INPDIR/$I.gui  ) then
+ cp  $INPDIR/$I.gui fort.34
+ echo external geometry input found in  $INPDIR/$I.gui >>& $OUTDIR/$OUTFILE
+ endif
+
+ cp $INPDIR/$I.d12 INPUT 
+if ( ${?PCLIST} ) then
+ foreach PC ($PCLIST)
+ ssh $PC cp $INPDIR/$I.d12 ${TMPDIR}/INPUT
+ ssh $PC cp $INPDIR/$I.gui ${TMPDIR}/fort.34
+ ssh $PC cp $INPDIR/$2.f9  ${TMPDIR}/fort.20
+ ssh $PC cp $INPDIR/$2.BORN  ${TMPDIR}/BORN.DAT
+ echo "INPUT has been copied in " $PC ":" $TMPDIR/INPUT
+ end
+endif
+
+ ${CRYCOMMAND} >>& $OUTDIR/$OUTFILE
+ echo -n "end_date "    >>  $OUTDIR/$OUTFILE
+ date >> $OUTDIR/$OUTFILE
+ ls ERROR* >& /dev/null
+ if($? == 0) then
+  head ERROR* 
+  head ERROR* >> $OUTDIR/$OUTFILE
+ endif
+
+ if(-e $INPPROP/$I.d3 && ! -z $INPPROP/$I.d3 ) then
+ echo properties input data $INPPROP/$I.d3 >>& $OUTDIR/$OUTFILE
+ echo properties input data $INPPROP/$I.d3
+ cat $INPPROP/$I.d3 >>& $OUTDIR/$OUTFILE
+ if (-e fort.9  && ! -z fort.9  ) then
+  ${XDIR}/properties < $INPPROP/$I.d3 >> $OUTDIR/$OUTFILE
+ endif
+ else
+ if(-e $INPPROP/properties.d3 && ! -z $INPPROP/properties.d3 ) then
+ echo properties input data $INPPROP/properties.d3 >>& $OUTDIR/$OUTFILE
+ cat $INPPROP/properties.d3 >>& $OUTDIR/$OUTFILE
+ if (-e fort.9  && ! -z fort.9  ) then
+ ${XDIR}/properties < $INPPROP/properties.d3 >> $OUTDIR/$OUTFILE
+ endif
+ endif
+ endif
+
+ date                   >>  $OUTDIR/$OUTFILE
+
+
+
+#tag_start_for_checkfile
+
+ ls ERROR* >& /dev/null
+ if($? == 0) then
+  head ERROR*
+  head ERROR* >> $OUTDIR/$OUTFILE
+ endif
+
+
+ echo " "                                         >>& $OUTDIR/$OUTFILE
+ echo "TEMPORARY          SAVED (in $OUTDIR)"     >>& $OUTDIR/$OUTFILE
+
+if (-e fort.9  && ! -z fort.9  ) then
+ cp fort.9 $OUTDIR/$I.f9
+ echo fort.9   $I.f9|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$I.f9|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}'>>&$OUTDIR/$OUTFILE
+ echo wave function binary file $OUTDIR/$I.f9
+ set MASTER_WITH_PROC_0="YES"
+else
+ echo 'binary wf (fort.9) is not written on this node' >>& $OUTDIR/$OUTFILE
+endif 
+
+if(-e fort.20  && ! -z fort.20 ) then
+ cp fort.20 $OUTDIR/$I.f20
+ echo fort.20  $I.f20|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$I.f20|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}'>>&$OUTDIR/$OUTFILE
+ echo file fort.20 saved as $OUTDIR/$I.f20
+endif
+
+if(-e fort.33  && ! -z fort.33 ) then
+ cp fort.33 $OUTDIR/$I.xyz
+ echo fort.33  $I.xyz|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$I.xyz|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}'>>&$OUTDIR/$OUTFILE
+ echo file fort.33 saved as $OUTDIR/$I.xyz
+endif
+
+if(-e fort.34  && ! -z fort.34 ) then
+ cp fort.34 $OUTDIR/$I.gui
+ echo fort.34  $I.gui|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$I.gui|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}'>>&$OUTDIR/$OUTFILE
+ echo file fort.34 saved as $OUTDIR/$I.gui
+endif
+
+if(-e fort.98  && ! -z fort.98 ) then
+ cp fort.98 $OUTDIR/$I.f98
+ echo fort.98  $I.f98|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$I.f98|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}'>>&$OUTDIR/$OUTFILE
+ echo file fort.98 saved as $OUTDIR/$I.f98
+endif
+
+ if(-e  GEOMETRY.CIF  && ! -z  GEOMETRY.CIF ) then
+ cp  GEOMETRY.CIF $OUTDIR/$I.cif
+ echo GEOMETRY.CIF $I.cif |awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l     $OUTDIR/$I.cif |awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}' \
+                            >>&$OUTDIR/$OUTFILE
+ echo file GEOMETRY.CIF saved as $OUTDIR/$I.cif
+ endif
+
+ if(-e  SCFOUT.LOG  && ! -z  SCFOUT.LOG ) then
+ cp  SCFOUT.LOG $OUTDIR/$I.SCFLOG
+ echo SCFOUT.LOG $I.SCFLOG |awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l   $OUTDIR/$I.SCFLOG |awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}' \
+                            >>&$OUTDIR/$OUTFILE
+ echo file SCFOUT.LOG saved as $OUTDIR/$I.SCFLOG
+ endif
+
+ if(-e STRUC.INCOOR && ! -z STRUC.INCOOR) then
+ cp STRUC.INCOOR $OUTDIR/$I.STRUC
+ echo STRUC.INCOOR $I.STRUC|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l     $OUTDIR/$I.STRUC|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}' \
+                            >>&$OUTDIR/$OUTFILE
+ echo file STRUC.INCOOR saved as $OUTDIR/$I.STRUC 
+ endif
+ 
+foreach NODAT_FILE ( ACLIMAX BAND BORN DIEL DOSS FINDSYM FREQINFO \
+                     GAUSSIAN GRED MOLDRAW KIBZ KRED OPTHESS \
+                     OPTINFO PHONBANDS PHONDOS PHONONS POTC PPAN RHOLINE EOSINFO \
+                     IRDIEL IRREFR IRSPEC RAMSPEC TENS_RAMAN )
+ 
+ set DAT_FILE=$NODAT_FILE".DAT"
+ if(-e $DAT_FILE && ! -z $DAT_FILE ) then
+ set SAVEDFILE=$I"."$NODAT_FILE
+ cp $DAT_FILE $OUTDIR/$SAVEDFILE
+ echo $DAT_FILE $SAVEDFILE|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$SAVEDFILE |awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}' \
+                           >>&$OUTDIR/$OUTFILE
+ echo file $DAT_FILE saved as $OUTDIR/$SAVEDFILE
+ endif
+ 
+end
+
+if(-e fort.9.tsk0  && ! -z fort.9.tsk0 ) then
+ cp fort.9.tsk0 $OUTDIR/$I.f9
+ echo fort.9.tsk0  $I.f9|awk '{printf("%-18s %-18s"),$1,$2}'       >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$I.f9|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}' >>&$OUTDIR/$OUTFILE
+ echo file fort.9.tsk0 saved as $OUTDIR/$I.f9
+ set MASTER_WITH_PROC_0="YES"
+endif
+
+if(-e FREQINFO.DAT.tsk0  && ! -z FREQINFO.DAT.tsk0 ) then
+ cp FREQINFO.DAT.tsk0 $OUTDIR/$I.FREQINFO
+ echo FREQINFO.DAT.tsk0  $I.FREQINFO|awk '{printf("%-18s %-18s"),$1,$2}'  >>& $OUTDIR/$OUTFILE
+ ls -l $OUTDIR/$I.FREQINFO|awk '{printf("%-8s %s %s %s\n"),$5,$6,$7,$8}'  >>&$OUTDIR/$OUTFILE
+ echo file FREQINFO.DAT.tsk0 saved as $OUTDIR/$I.FREQINFO
+endif
+
+
+ echo " " >>& $OUTDIR/$OUTFILE
+
+ set OPTSTORY = `ls -1 *|awk 'BEGIN{C="no"};{if($0~"opt"){C="yes"}};END{print C}'` 
+ if( $OPTSTORY == "yes" ) then
+ mkdir $OUTDIR/$I.optstory
+ cp opt* $OUTDIR/$I.optstory/
+ echo file "opt files" saved as $OUTDIR/$I.optstory/opt* >>& $OUTDIR/$OUTFILE
+ echo history of geometry during optimization - file opt* saved as $OUTDIR/$I.optstory/*
+ endif
+ 
+ ls SCAN* >& /dev/null
+ if($? == 0) then 
+  mkdir $OUTDIR/$I.scans
+  cp SCAN* $OUTDIR/$I.scans
+  echo phonon scan profiles saved in $OUTDIR/$I.scans
+ endif
+ 
+ if(-e fort.13  && ! -z fort.13 ) then
+ cp fort.13 $OUTDIR/$I.f13
+ echo file fort.13 saved as $OUTDIR/$I.f13 >>& $OUTDIR/$OUTFILE
+ echo file fort.13 saved as $OUTDIR/$I.f13
+ endif
+
+ if(-e fort.28  && ! -z fort.28 ) then
+ cp fort.28 $OUTDIR/$I.f28
+ echo file fort.28 saved as $OUTDIR/$I.f28 >>& $OUTDIR/$OUTFILE
+ echo file fort.28 saved as $OUTDIR/$I.f28
+ endif
+
+ if(-e fort.25  && ! -z fort.25 ) then
+ cp fort.25 $OUTDIR/$I.f25
+ echo file fort.25 saved as $OUTDIR/$I.f25 >>& $OUTDIR/$OUTFILE
+ echo file fort.25 saved as $OUTDIR/$I.f25
+ endif
+
+ if(-e fort.27  && ! -z fort.27 ) then
+ cp fort.27 $OUTDIR/$I.pol
+ echo file fort.27 saved as $OUTDIR/$I.pol >>& $OUTDIR/$OUTFILE
+ echo file fort.27 saved as $OUTDIR/$I.pol
+ endif
+
+ if(-e fort.31  && ! -z fort.31 ) then
+ cp fort.31 $OUTDIR/${I}_dat.prop3d
+ echo file fort.31 saved as $OUTDIR/${I}_dat.prop3d >>& $OUTDIR/$OUTFILE
+ echo file fort.31 saved as $OUTDIR/${I}_dat.prop3d
+ endif
+
+ if(-e fort.32  && ! -z fort.32 ) then
+ cp fort.32 $OUTDIR/${I}_dat.info3d
+ echo file fort.32 saved as $OUTDIR/${I}_dat.info3d >>& $OUTDIR/$OUTFILE
+ echo file fort.32 saved as $OUTDIR/${I}_dat.info3d
+ endif
+
+ if(-e fort.36  && ! -z fort.36 ) then
+ cp fort.36 $OUTDIR/$I.sym
+ echo file fort.36 saved as $OUTDIR/$I.sym >>& $OUTDIR/$OUTFILE
+ echo file fort.36 saved as $OUTDIR/$I.sym
+ endif
+
+ if(-e fort.37  && ! -z fort.37 ) then
+ cp fort.37 $OUTDIR/$I.loc
+ echo file fort.37 saved as $OUTDIR/$I.loc >>& $OUTDIR/$OUTFILE
+ echo file fort.37 saved as $OUTDIR/$I.loc
+ endif
+
+ if(-e fort.80  && ! -z fort.80 ) then
+ cp fort.80 $OUTDIR/$I.f80
+ echo file fort.80 saved as $OUTDIR/$I.f80 >>& $OUTDIR/$OUTFILE
+ echo file fort.80 saved as $OUTDIR/$I.f80
+ endif
+
+ if(-e fort.91  && ! -z fort.91 ) then
+ cp fort.91 $OUTDIR/$I.f91
+ echo file fort.91 saved as $OUTDIR/$I.f91 >>& $OUTDIR/$OUTFILE
+ echo file fort.91 saved as $OUTDIR/$I.f91
+ endif
+
+ if(-e phonons.dlv  && ! -z phonons.dlv ) then
+ cp phonons.dlv $OUTDIR/${I}_phonons.dlv
+ echo file phonons.dlv saved as $OUTDIR/${I}_phonons.dlv >>& $OUTDIR/$OUTFILE
+ echo file phonons.dlv saved as $OUTDIR/${I}_phonons.dlv
+ endif
+
+
+ echo -n "Disk usage:"  >>& $OUTDIR/$OUTFILE
+ ls -l  $TMPDIR/        >>& $OUTDIR/$OUTFILE
+ echo "<du -m>"         >>& $OUTDIR/$OUTFILE
+ du -m  $TMPDIR/        >>& $OUTDIR/$OUTFILE
+ echo "</du -m>"        >>& $OUTDIR/$OUTFILE
+ df .   $TMPDIR/        >>& $OUTDIR/$OUTFILE
+
+#tag_end_for_checkfile
+
+
+if ( ${?MASTER_WITH_PROC_0} ) then
+ touch ${TMPDIR}/checkfile0
+else
+### start checkfile ###
+cat << EOF > ${TMPDIR}/checkfile0
+#!/bin/csh -f
+set I=$I
+set OUTDIR=$OUTDIR
+set OUTFILE=$OUTFILE 
+set TMPDIR=$TMPDIR
+cd  ${TMPDIR}
+EOF
+sed '1,/^#tag_s/d;/^#tag_e/,$d'  ${TMPDIR}/$SCRIPT >> ${TMPDIR}/checkfile0
+chmod 755 ${TMPDIR}/checkfile0
+hostname
+echo '<checkfile0>'
+cat ${TMPDIR}/checkfile0
+echo '</checkfile0>'
+### end checkfile ###
+endif
+
+if ( ${?PBS_NODEFILE}) then
+ foreach PC ($PCLIST)
+  echo "#########"         >> $OUTDIR/$OUTFILE
+  echo "node: "$PC         >> $OUTDIR/$OUTFILE
+  echo "scp ${TMPDIR}/checkfile0   ${PC}:${TMPDIR}/checkfile"
+  scp ${TMPDIR}/checkfile0   ${PC}:${TMPDIR}/checkfile
+# ssh $PC "ls -l  $TMPDIR/ >> $OUTDIR/$OUTFILE"
+# ssh $PC "du -m  $TMPDIR/ >> $OUTDIR/$OUTFILE"
+# ssh $PC "df .   $TMPDIR/ >> $OUTDIR/$OUTFILE"
+  ssh $PC "                   ${TMPDIR}/checkfile"
+ end
+endif
+
+
+ cd $OUTDIR
+ rm -fr $TMPDIR/ &
+ exit
+
+
+ if(-e $I.f25  && ! -z $I.f25 ) then
+ echo output of Crgra in file $OUTDIR/$OUTFILE"g"
+ $CRY2K6_GRA/maps06 $I >>& $OUTDIR/$OUTFILE"g"
+ if(-e ${I}_maps06.ps  && ! -z ${I}_maps06.ps) then
+ echo contour maps postscript file $OUTDIR/${I}_maps06.ps  >>& $OUTDIR/$OUTFILE
+ echo contour maps postscript file $OUTDIR/${I}_maps06.ps  
+ endif
+ $CRY2K6_GRA/doss06 $I >>& $OUTDIR/$OUTFILE"g"
+ if(-e ${I}_doss06.ps  && ! -z $I.doss06) then
+ echo doss postscript file $OUTDIR/${I}_doss06.ps >>& $OUTDIR/$OUTFILE
+ echo doss postscript file $OUTDIR/${I}_doss06.ps
+ endif
+ $CRY2K6_GRA/band06 $I >>& $OUTDIR/$OUTFILE"g"
+ if(-e ${I}_band06.ps  && ! -z ${I}_band06.ps) then
+ echo band postscript file $OUTDIR/${I}_band06.ps >>& $OUTDIR/$OUTFILE
+ echo band postscript file $OUTDIR/${I}_band06.ps
+ endif
+ endif
+
+ if (! $?scfok ) then
+ echo  $TMPDIR removed >>& $OUTDIR/$OUTFILE
+ rm -R -f $TMPDIR
+ else
+ echo SCF abend - $TMPDIR not removed
+ echo  $TMPDIR not removed >>& $OUTDIR/$OUTFILE
+ endif
+ exit
